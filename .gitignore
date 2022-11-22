@@ -457,3 +457,6 @@ $RECYCLE.BIN/
 .direnv
 .env
 
+# Nix build result
+/result
+
