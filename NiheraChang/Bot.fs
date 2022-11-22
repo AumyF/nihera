@@ -29,17 +29,15 @@ type MusicBot() =
 
                 let channel = voiceState.Channel
 
-                let! _ = ctx.Client.SendMessageAsync(ctx.Channel, $"VC {channel.Name} に接続します")
-
                 let! connection = channel.ConnectAsync()
-                let! _ = ctx.Client.SendMessageAsync(ctx.Channel, $"VC {channel.Name} に接続しました．")
+                let! _ = ctx.RespondAsync($"VC {channel.Name} に接続しました．")
 
                 let pcm, stopHeartbeat = createStream id
                 let transmit = connection.GetTransmitSink()
                 do! pcm.CopyToAsync(transmit)
                 do! pcm.DisposeAsync()
                 connection.Disconnect()
-                stopHeartbeat()
+                stopHeartbeat ()
             with a ->
                 eprintfn "%A" a
 
