@@ -25,7 +25,7 @@
         };
         devShells.default = pkgs.mkShell {
           buildInputs = [
-            pkgs.dotnet-sdk_6
+            pkgs.dotnet-sdk_7
             pkgs.nuget-to-nix
 
             pkgs.ffmpeg

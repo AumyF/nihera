@@ -1,27 +1,20 @@
 module Download
 
 open System
+open FSharpPlus
 open FSharp.Data
+open FsToolkit.ErrorHandling
 open Api
 
-let getVideoPage id =
-    HtmlDocument.Load($"https://www.nicovideo.jp/watch/{id}")
+let private constructSessionInput (apiData: ApiData.Root) =
+    let aSession = apiData.Media.Delivery.Movie.Session
 
-
-let getApiData (videoPage: HtmlDocument) =
-    videoPage.Descendants(fun x -> x.HasId("js-initial-watch-data"))
-    |> Seq.head
-    |> fun x -> x.TryGetAttribute("data-api-data")
-    |> Option.get
-    |> (fun a -> a.Value() |> ApiData.Parse |> (fun x -> x.Media.Delivery.Movie.Session))
-
-
-let createSession (apidata: ApiData.Session) =
     let session =
         SessionInput.Session(
-            clientInfo = SessionInput.ClientInfo(apidata.PlayerId),
-            contentAuth = SessionInput.ContentAuth("ht2", apidata.ContentKeyTimeout, "nicovideo", apidata.ServiceUserId),
-            contentId = apidata.ContentId,
+            clientInfo = SessionInput.ClientInfo(aSession.PlayerId),
+            contentAuth =
+                SessionInput.ContentAuth("ht2", aSession.ContentKeyTimeout, "nicovideo", aSession.ServiceUserId),
+            contentId = aSession.ContentId,
             contentSrcIdSets =
                 [| SessionInput.ContentSrcIdSet(
                        [| SessionInput.ContentSrcId(
@@ -33,8 +26,8 @@ let createSession (apidata: ApiData.Session) =
                    ) |],
             contentType = "movie",
             contentUri = "",
-            keepMethod = SessionInput.KeepMethod(SessionInput.Heartbeat(apidata.HeartbeatLifetime)),
-            priority = apidata.Priority,
+            keepMethod = SessionInput.KeepMethod(SessionInput.Heartbeat(aSession.HeartbeatLifetime)),
+            priority = aSession.Priority,
             protocol =
                 SessionInput.Protocol(
                     "http",
@@ -53,113 +46,207 @@ let createSession (apidata: ApiData.Session) =
                             )
                     )
                 ),
-            recipeId = apidata.RecipeId,
+            recipeId = aSession.RecipeId,
             sessionOperationAuth =
                 SessionInput.SessionOperationAuth(
                     sessionOperationAuthBySignature =
                         SessionInput.SessionOperationAuthBySignature(
-                            signature = apidata.Signature,
-                            token = apidata.Token
+                            signature = aSession.Signature,
+                            token = aSession.Token
                         )
                 ),
             timingConstraint = "unlimited"
         )
 
 
-    let sessionInput = SessionInput.Root(session = session)
+    SessionInput.Root(session = session)
 
-    let postRequest (j: SessionInput.Root) =
-        Http.RequestString(
-            "https://api.dmc.nico/api/sessions?_format=json",
-            headers = [ HttpRequestHeaders.ContentType HttpContentTypes.Json ],
-            body = HttpRequestBody.TextRequest(j.JsonValue.ToString())
-        )
-        |> SessionResponse.Parse
+let private HEARTBEAT_INTERVAL = System.TimeSpan.FromSeconds(80)
 
-    postRequest sessionInput
+module Heartbeat =
+    type Error = RequestError of exn
 
-let heartbeat session =
-    let inner (session: HeartBeatRequest.Root) =
+type Heartbeat(sessionData: SessionResponse.Data) =
+    let error = new Event<Heartbeat.Error>()
+
+    interface IDisposable with
+        member self.Dispose() = self.cancellationTokenSource.Cancel()
+
+    [<CLIEvent>]
+    member _.Error = error.Publish
+
+    member val private session = HeartBeatRequest.Root(sessionData.JsonValue) with get, set
+    member val private cancellationTokenSource = new Threading.CancellationTokenSource(TimeSpan.FromHours(1))
+
+    member private self.SendFirstHeartbeat() =
         async {
-            do! Async.Sleep(System.TimeSpan.FromSeconds(40))
+            let! response =
+                Http.AsyncRequest(
+                    $"https://api.dmc.nico/api/sessions/{self.session.Session.Id}?_format=json&_method=PUT",
+                    httpMethod = "OPTIONS",
+                    headers =
+                        [ "Access-control-request-method", "POST"
+                          "Access-control-request-headers", "content-type"
+                          "Accept", "*/*"
+                          "Host", "api.dmc.nico"
+                          HttpRequestHeaders.Referer(
+                              "https://nicovideo.jp/watch/" + self.session.Session.RecipeId.Split("-")[1]
+                          )
+                          HttpRequestHeaders.Origin("https://www.nicovideo.jp")
+                          HttpRequestHeaders.AcceptEncoding "gzip, deflate, br"
+                          "Sec-Fetch-Mode", "cors"
+                          "Sec-Fetch-Site", "cross-site"
+                          "Sec-Fetch-Dest", "empty" ]
+                )
+                |> Async.Catch
+                |> Async.map Result.ofChoice
 
-            Http.Request(
-                $"https://api.dmc.nico/api/sessions/{session.Session.Id}?_format=json&_method=PUT",
-                httpMethod = "OPTIONS",
-                headers =
-                    [ "Access-control-request-method", "POST"
-                      "Access-control-request-headers", "content-type"
-                      "Accept", "*/*"
-                      "Host", "api.dmc.nico"
-                      HttpRequestHeaders.Referer("https://nicovideo.jp/watch/" + session.Session.RecipeId.Split("-")[1])
-                      HttpRequestHeaders.Origin("https://www.nicovideo.jp")
-                      HttpRequestHeaders.AcceptEncoding "gzip, deflate, br"
-                      "Sec-Fetch-Mode", "cors"
-                      "Sec-Fetch-Site", "cross-site"
-                      "Sec-Fetch-Dest", "empty" ]
-            )
-            |> ignore
-
-
-            let mutable session = session
-            use! _c = Async.OnCancel(fun () -> eprintfn "heartbeat stopped")
-
-            while (true) do
-
-                printfn "%s" (session.JsonValue.ToString())
-
-                let response =
-                    Http.RequestString(
-                        $"https://api.dmc.nico/api/sessions/{session.Session.Id}?_format=json&_method=PUT",
-                        headers =
-                            [ HttpRequestHeaders.ContentType HttpContentTypes.Json
-                              HttpRequestHeaders.Accept HttpContentTypes.Json
-                              HttpRequestHeaders.Origin "https://www.nicovideo.jp"
-                              HttpRequestHeaders.Referer(
-                                  "https://nicovideo.jp/watch/" + session.Session.RecipeId.Split("-")[1]
-                              ) ],
-                        body = HttpRequestBody.TextRequest(session.JsonValue.ToString())
-                    )
-                    |> HeartBeatResponse.Parse
-
-                eprintfn "heartbeat response: %d" response.Meta.Status
-                session <- HeartBeatRequest.Root(session = HeartBeatRequest.Session(response.Data.Session.JsonValue))
-                do! Async.Sleep(System.TimeSpan.FromSeconds(40))
+            return response
         }
 
-    let cts = new System.Threading.CancellationTokenSource(System.TimeSpan.FromHours(1))
-    Async.Start(inner session, cts.Token)
-    let stop () = cts.Cancel()
-    stop
 
-//let stopHeartbeat =
-//    heartbeat (HeartBeatRequest.Root(session = HeartBeatRequest.Session(session.JsonValue)))
+    member private self.SendHeartbeat() =
+        async {
+            let! response =
+                Http.AsyncRequestString(
+                    $"https://api.dmc.nico/api/sessions/{self.session.Session.Id}?_format=json&_method=PUT",
+                    headers =
+                        [ HttpRequestHeaders.ContentType HttpContentTypes.Json
+                          HttpRequestHeaders.Accept HttpContentTypes.Json
+                          HttpRequestHeaders.Origin "https://www.nicovideo.jp"
+                          HttpRequestHeaders.Referer(
+                              "https://nicovideo.jp/watch/" + self.session.Session.RecipeId.Split("-")[1]
+                          ) ],
+                    body = HttpRequestBody.TextRequest(sessionData.JsonValue.ToString())
+                )
+                |> Async.Catch
+                |> Async.map Result.ofChoice
 
-let downloadAudio (input: string) =
+            return response
+        }
+
+    member self.Start() =
+        let inner () =
+            async {
+                do!
+                    self.SendFirstHeartbeat()
+                    |> AsyncResult.ignore
+                    |> AsyncResult.mapError (Heartbeat.Error.RequestError)
+                    |> AsyncResult.teeError (error.Trigger)
+                    |> AsyncResult.ignoreError
+
+                while (true) do
+                    do! Async.Sleep HEARTBEAT_INTERVAL
+                    let! response = self.SendHeartbeat()
+                    let response = response |> Result.mapError Heartbeat.Error.RequestError
+
+                    let tryParse =
+                        Result.protect SessionResponse.Parse
+                        >> Result.mapError (Heartbeat.Error.RequestError)
+
+
+                    result {
+                        let! response = response
+                        let! response = tryParse response
+                        self.session <- HeartBeatRequest.Root(response.Data.JsonValue)
+                    }
+                    |> Result.teeError (eprintf "%A")
+                    |> Result.ignoreError
+
+            }
+
+        let ct = self.cancellationTokenSource.Token
+        Async.Start(inner (), ct)
+
+let private fetchWatchPage id =
+    HtmlDocument.AsyncLoad($"https://www.nicovideo.jp/watch/{id}")
+    |> Async.Catch
+    |> Async.map (Result.ofChoice)
+
+let private getJsInitialWatchData (watchPage: HtmlDocument) =
+    watchPage.CssSelect("#js-initial-watch-data") |> List.tryHead
+
+let private getAttributeApiData (node: HtmlNode) = node.TryGetAttribute("data-api-data")
+let private parseApiData str = Result.protect (ApiData.Parse) (str)
+
+let private postSessionCreationRequest (sessionInput: SessionInput.Root) =
+    Http.AsyncRequestString(
+        "https://api.dmc.nico/api/sessions?_format=json",
+        headers = [ HttpRequestHeaders.ContentType HttpContentTypes.Json ],
+        body = HttpRequestBody.TextRequest(sessionInput.JsonValue.ToString())
+    )
+    |> Async.Catch
+    |> Async.map (Result.ofChoice)
+
+let private parseSessionResponse str =
+    Result.protect (SessionResponse.Parse) str
+
+/// Creates DSharpPlus.VoiceNext-compatible audio stream using ffmpeg
+let private startFfmpeg (input: string) =
     let startInfo =
         Diagnostics.ProcessStartInfo(
             fileName = "ffmpeg",
-            arguments = $"-y -re -i {input} -f s16le -af volume='0.1' -ar 48000 -vn pipe:1"
+            arguments = $"-y -re -i {input} -f s16le -af volume='0.1' -ar 48000 -vn pipe:1",
+            RedirectStandardOutput = true,
+            UseShellExecute = false
         )
-    // Diagnostics.ProcessStartInfo(fileName = "ffmpeg", arguments = $"-y -re -i {m3u8Url} -f mp3 -ar 48000 foo")
 
-    startInfo.RedirectStandardOutput <- true
-    startInfo.UseShellExecute <- false
     let ffmpeg = Diagnostics.Process.Start(startInfo)
-    ffmpeg.StandardOutput.BaseStream
+    ffmpeg
 
 
-let createStream id =
-    let videoPage = getVideoPage id
-    printfn "get video page"
-    let apiData = getApiData (videoPage)
-    printfn "get api data"
-    let sessionResponse = createSession apiData
-    printfn "Session created."
-    printfn "Session id: %s" sessionResponse.Data.Session.Id
+type Error =
+    | FailedToFetchWatchPage of exn
+    | JsInitialWatchDataNotFound
+    | AttributeDataApiDataNotFound
+    | FailedToParseApiData of exn
+    | FailedToCreateSession of exn
+    | FailedToParseSessionResponse of exn
 
-    let stopHeartbeat =
-        heartbeat (HeartBeatRequest.Root(session = HeartBeatRequest.Session(sessionResponse.Data.Session.JsonValue)))
+type NiconicoAudioStream(stream, heartbeat) =
+    member _.stream: System.IO.Stream = stream
+    member private _.heartbeat: Heartbeat = heartbeat
 
-    let pcm = downloadAudio (sessionResponse.Data.Session.ContentUri)
-    pcm, stopHeartbeat
+    interface IAsyncDisposable with
+        member self.DisposeAsync() =
+            task {
+
+                do (self.heartbeat :> IDisposable).Dispose()
+                do! self.stream.DisposeAsync()
+            }
+            |> System.Threading.Tasks.ValueTask
+
+    static member Create(id: string) =
+        asyncResult {
+            let! watchPage = fetchWatchPage id |> AsyncResult.mapError (Error.FailedToFetchWatchPage)
+
+            let! apiData =
+                result {
+                    let! jsInitialWatchData =
+                        (getJsInitialWatchData watchPage)
+                        |> Option.toResultWith Error.JsInitialWatchDataNotFound
+
+                    let! apiData =
+                        getAttributeApiData jsInitialWatchData
+                        |> Option.toResultWith (Error.AttributeDataApiDataNotFound)
+
+                    return! parseApiData (apiData.Value()) |> Result.mapError (Error.FailedToParseApiData)
+                }
+
+            let sessionInput = constructSessionInput apiData
+
+            let! sessionResponse =
+                postSessionCreationRequest (sessionInput)
+                |> AsyncResult.mapError (Error.FailedToCreateSession)
+
+            let! sessionResponse =
+                parseSessionResponse sessionResponse
+                |> Result.mapError (Error.FailedToParseSessionResponse)
+
+
+            let heartbeat = new Heartbeat(sessionResponse.Data)
+            heartbeat.Start()
+            let ffmpeg = startFfmpeg (sessionResponse.Data.Session.ContentUri)
+
+            return new NiconicoAudioStream(ffmpeg.StandardOutput.BaseStream, heartbeat)
+        }

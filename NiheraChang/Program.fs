@@ -2,6 +2,7 @@
 open DSharpPlus
 open DSharpPlus.VoiceNext
 open DSharpPlus.CommandsNext
+open DSharpPlus.SlashCommands
 open Bot
 
 let connect (discord: DiscordClient) =
@@ -31,6 +32,9 @@ let main _ =
         discord.UseCommandsNext(CommandsNextConfiguration(StringPrefixes = [ "!" ]))
 
     commands.RegisterCommands<MusicBot>()
+
+    let slash = discord.UseSlashCommands()
+    slash.RegisterCommands<MusicSlash>()
 
     discord.UseVoiceNext() |> ignore
 
