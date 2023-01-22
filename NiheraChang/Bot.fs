@@ -81,43 +81,52 @@ type MusicBot() =
         |> TaskResult.ignoreError
         :> Task
 
+type InteractionContext with
+
+    member self.RespondAsync(msg) =
+        self.CreateResponseAsync(
+            InteractionResponseType.ChannelMessageWithSource,
+            DiscordInteractionResponseBuilder().WithContent msg
+        )
+
+    /// Join the channel.
+    /// If the member which executed the command is not in any VC, return `None`
+    member self.JoinVoiceChannel() =
+        task {
+            let voiceState = self.Member.VoiceState
+
+            if (voiceState = null) then
+                do! self.RespondAsync "ボイスチャンネルに入ってください"
+
+                return None
+            else
+                let channel = voiceState.Channel
+
+                let! connection = channel.ConnectAsync()
+                let! _ = self.RespondAsync $"VC {channel.Name} に接続しました"
+
+                return Some(connection)
+        }
+
+
+
 type MusicSlash() =
     inherit ApplicationCommandModule()
 
     [<SlashCommand(name = "play", description = "Play audio from niconico")>]
     member _.Play(ctx: InteractionContext, [<Option("id", "Video id to play. Example: sm9")>] id: string) : Task =
-        let respond msg =
-            ctx.CreateResponseAsync(
-                InteractionResponseType.ChannelMessageWithSource,
-                DiscordInteractionResponseBuilder().WithContent(msg)
-            )
-
         task {
-            try
-                let voiceState = ctx.Member.VoiceState
+            let! result =
+                taskResult {
+                    use! connection = ctx.JoinVoiceChannel() |> Task.map (Result.requireSome "")
+                    use! audioStream = NiconicoAudioStream.Create id |> AsyncResult.mapError (fun e -> e.ToString())
 
-                if (voiceState = null) then
-                    let! _ =
-                        respond "ボイスチャンネルに入ってください"
+                    let transmit = connection.GetTransmitSink()
+                    do! audioStream.stream.CopyToAsync(transmit)
 
                     return ()
+                }
 
-                let channel = voiceState.Channel
-
-                use! connection = channel.ConnectAsync()
-                let! _ = respond ($"VC {channel.Name} に接続しました")
-
-                let! audioStream = NiconicoAudioStream.Create id
-
-                use audioStream =
-                    match audioStream with
-                    | Error e -> raise (System.Exception(e.ToString()))
-                    | Ok s -> s
-
-                let transmit = connection.GetTransmitSink()
-                do! audioStream.stream.CopyToAsync(transmit)
-            with a ->
-                eprintfn "%A" a
-
-            return ()
+            do!
+                result |> Result.either (Task.FromResult) (fun e -> ctx.RespondAsync $"{e}" |> Task.ofUnit)
         }
