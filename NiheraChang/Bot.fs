@@ -84,8 +84,8 @@ type MusicBot() =
 type MusicSlash() =
     inherit ApplicationCommandModule()
 
-    [<SlashCommand(name = "play", description = "Play niconico audio")>]
-    member _.Play(ctx: InteractionContext, [<Option("id", "id to play")>] id: string) : Task =
+    [<SlashCommand(name = "play", description = "Play audio from niconico")>]
+    member _.Play(ctx: InteractionContext, [<Option("id", "Video id to play. Example: sm9")>] id: string) : Task =
         let respond msg =
             ctx.CreateResponseAsync(
                 InteractionResponseType.ChannelMessageWithSource,
