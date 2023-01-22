@@ -1,7 +1,6 @@
 ﻿open System
 open DSharpPlus
 open DSharpPlus.VoiceNext
-open DSharpPlus.CommandsNext
 open DSharpPlus.SlashCommands
 open Bot
 
@@ -26,12 +25,6 @@ let main _ =
                 TokenType = TokenType.Bot
             )
         )
-
-
-    let commands =
-        discord.UseCommandsNext(CommandsNextConfiguration(StringPrefixes = [ "!" ]))
-
-    commands.RegisterCommands<MusicBot>()
 
     let slash = discord.UseSlashCommands()
     slash.RegisterCommands<MusicSlash>()
