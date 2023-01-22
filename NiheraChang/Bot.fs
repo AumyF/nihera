@@ -16,24 +16,15 @@ type InteractionContext with
             DiscordInteractionResponseBuilder().WithContent msg
         )
 
-    /// Join the channel.
-    /// If the member which executed the command is not in any VC, return `None`
-    member self.JoinVoiceChannel() =
-        task {
+    member self.GetChannel() =
             let voiceState = self.Member.VoiceState
 
             if (voiceState = null) then
-                do! self.RespondAsync "ボイスチャンネルに入ってください"
 
-                return None
+                None
             else
                 let channel = voiceState.Channel
-
-                let! connection = channel.ConnectAsync()
-                let! _ = self.RespondAsync $"VC {channel.Name} に接続しました"
-
-                return Some(connection)
-        }
+                Some channel
 
     member self.CatchError(t: TaskResult<unit, string>) =
         let reportError msg =
@@ -78,7 +69,11 @@ type MusicSlash() =
         task {
             let! result =
                 taskResult {
-                    use! connection = ctx.JoinVoiceChannel() |> Task.map (Result.requireSome "")
+                    let! channel = ctx.GetChannel() |> Result.requireSome "ボイスチャンネルに入ってください"
+
+                    use! connection = channel.ConnectAsync()
+                    do! ctx.RespondAsync $"VC {channel.Name} に接続しました"
+
                     use! audioStream = NiconicoAudioStream.Create id |> AsyncResult.mapError (fun e -> e.ToString())
 
                     let transmit = connection.GetTransmitSink()
