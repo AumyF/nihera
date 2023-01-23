@@ -203,15 +203,16 @@ type Error =
     | FailedToCreateSession of exn
     | FailedToParseSessionResponse of exn
 
-type NiconicoAudioStream(stream, heartbeat) =
-    member _.stream: System.IO.Stream = stream
+type NiconicoAudioStream(ffmpeg, heartbeat) =
+    member private _.FFmpeg: Diagnostics.Process = ffmpeg
     member private _.heartbeat: Heartbeat = heartbeat
+    member _.stream: System.IO.Stream = ffmpeg.StandardOutput.BaseStream
 
     interface IAsyncDisposable with
         member self.DisposeAsync() =
             task {
-
                 do (self.heartbeat :> IDisposable).Dispose()
+                do self.FFmpeg.Dispose()
                 do! self.stream.DisposeAsync()
             }
             |> System.Threading.Tasks.ValueTask
@@ -248,5 +249,5 @@ type NiconicoAudioStream(stream, heartbeat) =
             heartbeat.Start()
             let ffmpeg = startFfmpeg (sessionResponse.Data.Session.ContentUri)
 
-            return new NiconicoAudioStream(ffmpeg.StandardOutput.BaseStream, heartbeat)
+            return new NiconicoAudioStream(ffmpeg, heartbeat)
         }
