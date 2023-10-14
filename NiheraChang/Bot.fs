@@ -43,6 +43,9 @@ type InteractionContext with
 
 open System
 open System.Text.RegularExpressions
+open System.Collections.Concurrent
+
+type Guild = { queue: ConcurrentQueue<string> }
 
 let parseId str =
     let m = Regex(@"sm\d+").Match str
@@ -52,8 +55,7 @@ type MusicSlash() =
     inherit ApplicationCommandModule()
     static member val AudioStream: Option<NiconicoAudioStream> = None with get, set
 
-    static member val queue: Collections.Concurrent.ConcurrentDictionary<uint64, Collections.Concurrent.ConcurrentQueue<string>> =
-        Collections.Concurrent.ConcurrentDictionary() with get, set
+    static member val guilds: ConcurrentDictionary<uint64, Guild> = ConcurrentDictionary()
 
     [<SlashCommand(name = "leave", description = "Leave the VC")>]
     member _.Leave(ctx: InteractionContext) : Task =
@@ -78,8 +80,7 @@ type MusicSlash() =
         task {
             let guildId = ctx.Guild.Id
 
-            let queue =
-                MusicSlash.queue.GetOrAdd(guildId, Collections.Concurrent.ConcurrentQueue())
+            let queue = MusicSlash.guilds.GetOrAdd(guildId, { queue = ConcurrentQueue() }).queue
 
             match parseId id with
             | None ->
@@ -96,9 +97,13 @@ type MusicSlash() =
     member _.List(ctx: InteractionContext) : Task =
         task {
             try
-                let queue = MusicSlash.queue[ctx.Guild.Id]
+                let mutable guild = null
 
-                let msg = if queue = null then "キューが空です" else String.concat "\n" queue
+                let msg =
+                    if MusicSlash.guilds.TryGetValue(ctx.Guild.Id, &guild) then
+                        "キューが空です"
+                    else
+                        String.concat "\n" queue
 
                 do! ctx.RespondAsync msg
             with e ->
@@ -128,7 +133,7 @@ type MusicSlash() =
                 use transmit = connection.GetTransmitSink()
 
                 let guildId = ctx.Guild.Id
-                let queue = MusicSlash.queue[guildId]
+                let queue = MusicSlash.guilds[guildId].queue
 
                 let mutable id = null
 

@@ -8,16 +8,16 @@
         "fantomas"
       ]
     },
-    "fsautocomplete": {
-      "version": "0.58.2",
-      "commands": [
-        "fsautocomplete"
-      ]
-    },
     "dotnet-fsharplint": {
       "version": "0.21.3",
       "commands": [
         "dotnet-fsharplint"
+      ]
+    },
+    "fsautocomplete": {
+      "version": "0.60.0",
+      "commands": [
+        "fsautocomplete"
       ]
     }
   }
